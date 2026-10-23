@@ -1,10 +1,10 @@
-import { generatePuzzle } from './puzzle.js';
+import { generatePuzzle, difficultyBand } from './puzzle.js';
 
 const EMPTY = 0;
 const MARKED = 1;
 const BUNNY = 2;
 const STATE_NAMES = ['empty', 'marked', 'bunny'];
-const STORAGE_KEY = 'lesleydoku.v1';
+const STORAGE_KEY = 'lesleydoku.v2';
 const PACK_URL = 'data/levels.json';
 
 const el = {
@@ -12,6 +12,7 @@ const el = {
   boardWrap: document.querySelector('.board-wrap'),
   levelNumber: document.getElementById('level-number'),
   boardSize: document.getElementById('board-size'),
+  pips: document.getElementById('pips'),
   clock: document.getElementById('clock'),
   hint: document.getElementById('hint'),
   win: document.getElementById('win'),
@@ -35,6 +36,7 @@ const game = {
   solved: false,
   elapsed: 0,
   tickFrom: 0,
+  floor: 0,
 };
 
 let pack = null;
@@ -95,6 +97,22 @@ function buildBoard() {
   }
 
   sizeBoard();
+}
+
+const BAND_NAMES = ['Gentle', 'Easy', 'Steady', 'Tricky', 'Tough'];
+
+// Five pips next to the level number, so the climb is visible and not just
+// felt. The band comes from the puzzle's own rating, never from the level.
+function renderDifficulty() {
+  const band = game.puzzle.band || difficultyBand(game.puzzle.rating || 0);
+  el.pips.innerHTML = '';
+  for (let i = 1; i <= BAND_NAMES.length; i++) {
+    const pip = document.createElement('span');
+    pip.className = i <= band ? 'pip on' : 'pip';
+    el.pips.appendChild(pip);
+  }
+  el.pips.setAttribute('aria-label', `Difficulty: ${BAND_NAMES[band - 1]}`);
+  el.pips.title = BAND_NAMES[band - 1];
 }
 
 function sizeBoard() {
@@ -285,6 +303,7 @@ function save() {
         states: game.states.join(''),
         elapsed: game.elapsed,
         solved: game.solved,
+        floor: game.floor,
       })
     );
   } catch (err) {
@@ -323,21 +342,24 @@ async function puzzleForLevel(level) {
       size: entry.n,
       regions: entry.r.split('').map(Number),
       solution: entry.s,
-      tier: entry.t,
+      rating: entry.d,
+      band: entry.b,
     };
   }
 
   el.loading.hidden = false;
   el.loading.textContent = 'Building a puzzle…';
   await new Promise((resolve) => setTimeout(resolve, 30));
-  const made = generatePuzzle(level);
+  const made = generatePuzzle(level, { floor: game.floor || 0 });
   el.loading.hidden = true;
+  made.band = difficultyBand(made.rating);
   return made;
 }
 
 async function startLevel(level) {
   game.level = level;
   game.puzzle = await puzzleForLevel(level);
+  game.floor = Math.max(game.floor || 0, game.puzzle.rating || 0);
   game.states = new Array(game.puzzle.size * game.puzzle.size).fill(EMPTY);
   game.history = [];
   game.solved = false;
@@ -345,6 +367,7 @@ async function startLevel(level) {
 
   el.levelNumber.textContent = String(level);
   el.boardSize.textContent = `${game.puzzle.size} × ${game.puzzle.size}`;
+  renderDifficulty();
   el.win.hidden = true;
   el.board.classList.remove('solved');
   el.board.style.opacity = '1';
@@ -362,9 +385,11 @@ function restore(saved) {
   game.history = [];
   game.solved = Boolean(saved.solved);
   game.elapsed = saved.elapsed || 0;
+  game.floor = saved.floor || game.puzzle.rating || 0;
 
   el.levelNumber.textContent = String(game.level);
   el.boardSize.textContent = `${game.puzzle.size} × ${game.puzzle.size}`;
+  renderDifficulty();
   buildBoard();
   paint();
 

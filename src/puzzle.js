@@ -141,17 +141,28 @@ function touching(size, cell) {
   return out;
 }
 
-// Human-style solver, using the techniques a player actually applies.
+// ---------------------------------------------------------------------------
+// Solving and difficulty rating
 //
-//   T1 "forced single" - a row, column or region with one candidate left.
-//   T2 "confinement"   - every candidate of a unit sits inside one other
-//                        unit, so that unit's other cells are clear.
-//   T3 "elimination"   - a cell attacked by every possible placement of
-//                        some unit is clear.
+// Difficulty is modelled as the scanning work a player does. On each round the
+// solver finds every deduction available at the easiest technique that works,
+// and charges for the hunt: there are 3N units to look through, a harder
+// technique costs more to check per unit, and the more units happen to be
+// productive at that moment the sooner one is spotted.
 //
-// `techniques` caps how deep the solver may go, which is how a puzzle gets
-// rated: solvable with 2 is gentle, needing 3 is harder.
-export function logicSolve(size, regions, techniques = 3) {
+//   T1 "only square left" - a row, column or patch with one candidate left.
+//   T2 "confinement"      - every candidate of a unit sits inside one other
+//                           unit, so that unit's other cells are clear.
+//   T3 "every placement"  - a cell ruled out by every possible placement of
+//                           some unit, wherever that bunny ends up.
+//
+// The resulting number is comparable across board sizes, which is what lets
+// the level ladder keep climbing when the board grows.
+// ---------------------------------------------------------------------------
+
+const SCAN_COST = { 1: 1, 2: 3, 3: 9 };
+
+export function analyse(size, regions, maxTechnique = 3) {
   const units = buildUnits(size, regions);
   const cellUnits = unitsOfCell(size, regions);
   const touches = [];
@@ -160,7 +171,9 @@ export function logicSolve(size, regions, techniques = 3) {
   const state = new Int8Array(size * size).fill(UNKNOWN);
   const hasBunny = new Array(units.length).fill(false);
   let placed = 0;
-  let hardSteps = 0;
+  let rating = 0;
+  let rounds = 0;
+  let hardest = 0;
   let contradiction = false;
 
   function block(cell) {
@@ -193,64 +206,89 @@ export function logicSolve(size, regions, techniques = 3) {
     return touches[from].includes(target);
   }
 
-  const openUnits = () => {
+  function openUnits() {
     const out = [];
     for (let u = 0; u < units.length; u++) {
       if (hasBunny[u]) continue;
-      const candidates = units[u].filter((c) => state[c] === UNKNOWN);
-      out.push([u, candidates]);
+      out.push([u, units[u].filter((c) => state[c] === UNKNOWN)]);
     }
     return out;
-  };
+  }
 
-  while (placed < size && !contradiction) {
-    let progress = false;
-
-    for (const [, candidates] of openUnits()) {
+  // Each deduction is keyed by the unit that justifies it, because that is
+  // what a player scans: "is this row/column/patch telling me anything?"
+  function deductionsAt(technique, open) {
+    const found = [];
+    for (const [u, candidates] of open) {
       if (candidates.length === 0) {
         contradiction = true;
-        break;
+        return [];
       }
-      if (candidates.length === 1) {
-        placeBunny(candidates[0]);
-        progress = true;
+      if (technique === 1) {
+        if (candidates.length === 1) found.push({ place: candidates[0] });
+        continue;
       }
-    }
-    if (progress || contradiction) continue;
-
-    if (techniques >= 2) {
-      for (const [u, candidates] of openUnits()) {
+      if (technique === 2) {
+        const clear = new Set();
         for (let slot = 0; slot < 3; slot++) {
           const target = cellUnits[candidates[0]][slot];
           if (target === u) continue;
           if (!candidates.every((c) => cellUnits[c][slot] === target)) continue;
           for (const cell of units[target]) {
-            if (state[cell] === UNKNOWN && !candidates.includes(cell) && block(cell)) {
-              progress = true;
-            }
+            if (state[cell] === UNKNOWN && !candidates.includes(cell)) clear.add(cell);
           }
         }
+        if (clear.size > 0) found.push({ clear: [...clear] });
+        continue;
       }
-      if (progress || contradiction) continue;
-    }
-
-    if (techniques >= 3) {
-      for (const [, candidates] of openUnits()) {
-        for (let cell = 0; cell < state.length; cell++) {
-          if (state[cell] !== UNKNOWN || candidates.includes(cell)) continue;
-          if (candidates.every((c) => attacks(c, cell)) && block(cell)) {
-            progress = true;
-            hardSteps++;
-          }
-        }
+      const clear = [];
+      for (let cell = 0; cell < state.length; cell++) {
+        if (state[cell] !== UNKNOWN || candidates.includes(cell)) continue;
+        if (candidates.every((c) => attacks(c, cell))) clear.push(cell);
       }
-      if (progress || contradiction) continue;
+      if (clear.length > 0) found.push({ clear });
     }
-
-    break;
+    return found;
   }
 
-  return { solved: !contradiction && placed === size, hardSteps, state };
+  while (placed < size && !contradiction) {
+    const open = openUnits();
+    let technique = 0;
+    let deductions = [];
+
+    for (let t = 1; t <= maxTechnique; t++) {
+      deductions = deductionsAt(t, open);
+      if (contradiction) break;
+      if (deductions.length > 0) {
+        technique = t;
+        break;
+      }
+    }
+    if (contradiction || technique === 0) break;
+
+    // The hunt: 3N units to check, dearer per unit for a harder technique,
+    // divided by however many of them are currently productive.
+    rating += (3 * size * SCAN_COST[technique]) / deductions.length;
+    rounds++;
+    hardest = Math.max(hardest, technique);
+
+    for (const deduction of deductions) {
+      if (deduction.place !== undefined) placeBunny(deduction.place);
+      else for (const cell of deduction.clear) block(cell);
+    }
+  }
+
+  let resolved = 0;
+  for (const s of state) if (s !== UNKNOWN) resolved++;
+
+  return {
+    solved: !contradiction && placed === size,
+    resolved,
+    rating: Math.round(rating),
+    rounds,
+    hardest,
+    state,
+  };
 }
 
 // Exhaustive count (capped at 2) used to confirm uniqueness.
@@ -289,9 +327,11 @@ export function countSolutions(size, regions, limit = 2) {
 // Generation
 //
 // Random region layouts are almost never solvable by logic, so the shapes are
-// hill-climbed: nudge one cell from one region into a neighbouring region,
-// keep the nudge if logic can now resolve at least as much of the board, and
-// repeat until the whole board falls out by deduction alone.
+// hill-climbed in two phases: first nudge cells between neighbouring regions
+// until the board falls out by deduction alone, then keep nudging to steer the
+// rating towards the one the level ladder asked for. Shaping a puzzle to a
+// target beats generating at random and hoping, which is what made the old
+// ladder lurch between trivial and brutal.
 // ---------------------------------------------------------------------------
 
 function orthogonal(size, cell) {
@@ -323,14 +363,27 @@ function staysConnected(size, regions, region, drop, seed) {
   return seen.size === total;
 }
 
-function progressScore(size, regions) {
-  const result = logicSolve(size, regions, 3);
-  let resolved = 0;
-  for (const s of result.state) if (s !== UNKNOWN) resolved++;
-  return { resolved, solved: result.solved, hardSteps: result.hardSteps };
+// One random nudge of a cell into a neighbouring region. Returns an undo, or
+// null if no legal nudge was available at that cell.
+function nudge(size, regions, seeds, rand) {
+  const cell = Math.floor(rand() * regions.length);
+  const from = regions[cell];
+  if (seeds[from] === cell) return null;
+
+  const options = orthogonal(size, cell).filter((nb) => regions[nb] !== from);
+  if (options.length === 0) return null;
+  if (!staysConnected(size, regions, from, cell, seeds[from])) return null;
+
+  regions[cell] = regions[options[Math.floor(rand() * options.length)]];
+  return () => {
+    regions[cell] = from;
+  };
 }
 
-function climb(size, irregularity, maxIterations, rand) {
+// Builds one puzzle of `size` aimed at `target` difficulty. Returns null when
+// this starting layout could not be made solvable; callers simply try again.
+export function shapePuzzle(size, target, rand = Math.random, irregularity = 0.6, iterations = 0) {
+  iterations = iterations || 300 * size;
   const solution = randomSolution(size, rand);
   if (!solution) return null;
   const seeds = solution.map((c, r) => r * size + c);
@@ -338,82 +391,119 @@ function climb(size, irregularity, maxIterations, rand) {
   if (!grown) return null;
 
   const regions = Array.from(grown);
-  let current = progressScore(size, regions);
 
-  for (let i = 0; i < maxIterations && !current.solved; i++) {
-    const cell = Math.floor(rand() * regions.length);
-    const from = regions[cell];
-    if (seeds[from] === cell) continue;
-
-    const options = orthogonal(size, cell).filter((nb) => regions[nb] !== from);
-    if (options.length === 0) continue;
-    if (!staysConnected(size, regions, from, cell, seeds[from])) continue;
-
-    regions[cell] = regions[options[Math.floor(rand() * options.length)]];
-    const next = progressScore(size, regions);
+  // Phase one: make it solvable without guessing.
+  let current = analyse(size, regions);
+  for (let i = 0; i < iterations && !current.solved; i++) {
+    const undo = nudge(size, regions, seeds, rand);
+    if (!undo) continue;
+    const next = analyse(size, regions);
     if (next.resolved >= current.resolved) current = next;
-    else regions[cell] = from;
+    else undo();
+  }
+  if (!current.solved) return null;
+
+  // Phase two: steer the rating towards the target.
+  let distance = Math.abs(current.rating - target);
+  for (let i = 0; i < iterations && distance > 0; i++) {
+    const undo = nudge(size, regions, seeds, rand);
+    if (!undo) continue;
+    const next = analyse(size, regions);
+    const nextDistance = Math.abs(next.rating - target);
+    if (next.solved && nextDistance <= distance) {
+      current = next;
+      distance = nextDistance;
+    } else {
+      undo();
+    }
   }
 
-  if (!current.solved) return null;
   if (countSolutions(size, regions) !== 1) return null;
 
-  const gentle = logicSolve(size, regions, 2).solved;
   return {
     size,
     regions,
     solution,
-    tier: gentle ? 1 : 2,
-    hardSteps: current.hardSteps,
+    rating: current.rating,
+    rounds: current.rounds,
+    hardest: current.hardest,
   };
 }
 
-// Board size and difficulty preference for a given level. Difficulty grows on
-// two axes: the board gets bigger, and the solve needs more of the awkward
-// eliminations (`hardSteps`) rather than straightforward forced moves.
-const LADDER = [5, 5, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9];
+// ---------------------------------------------------------------------------
+// The level ladder
+//
+// Difficulty has to climb without ever dipping, so the ladder is one rising
+// rating curve rather than a set of per-level rules. The board grows in
+// blocks, and inside each block the target rating climbs geometrically, so
+// equal-sized steps feel equal. Each block starts above where the last one
+// ended, which means a bigger board never arrives as a breather.
+// ---------------------------------------------------------------------------
+const BLOCKS = [
+  { size: 5, levels: 6, from: 12, to: 55 },
+  { size: 6, levels: 8, from: 60, to: 130 },
+  { size: 7, levels: 10, from: 140, to: 260 },
+  { size: 8, levels: 12, from: 270, to: 430 },
+  { size: 9, levels: 12, from: 440, to: 640 },
+  { size: 10, levels: 12, from: 660, to: 950 },
+];
+
+export const LADDER_LENGTH = BLOCKS.reduce((sum, block) => sum + block.levels, 0);
 
 export function levelSpec(level) {
-  if (level <= LADDER.length) {
-    const size = LADDER[level - 1];
-    let step = 0;
-    while (level - step > 1 && LADDER[level - step - 2] === size) step++;
-    return {
-      size,
-      preferredTier: step === 0 ? 1 : 2,
-      minHardSteps: step === 0 ? 0 : 2 * step,
-      maxHardSteps: step === 0 ? Infinity : 2 * step + 6,
-      irregularity: Math.min(0.3 + level * 0.03, 0.75),
-    };
+  let first = 1;
+  for (const block of BLOCKS) {
+    if (level < first + block.levels) {
+      const steps = block.levels - 1;
+      const progress = steps === 0 ? 0 : (level - first) / steps;
+      const rating = Math.round(block.from * (block.to / block.from) ** progress);
+      return { size: block.size, rating, irregularity: 0.6 };
+    }
+    first += block.levels;
   }
-  const beyond = level - LADDER.length;
+
+  // Past the ladder the board stays at its largest and the climb continues,
+  // easing off so it stays solvable rather than becoming a slog.
+  const last = BLOCKS[BLOCKS.length - 1];
+  const beyond = level - LADDER_LENGTH;
   return {
-    size: 10,
-    preferredTier: 2,
-    minHardSteps: Math.min(2 + Math.floor(beyond / 3), 10),
-    maxHardSteps: Math.min(2 + Math.floor(beyond / 3), 10) + 5,
-    irregularity: 0.75,
+    size: last.size,
+    rating: Math.min(Math.round(last.to * 1.03 ** beyond), 1400),
+    irregularity: 0.6,
   };
 }
 
-export function generatePuzzle(level, rand = Math.random, budgetMs = 2500) {
-  const { size, preferredTier, minHardSteps, maxHardSteps, irregularity } = levelSpec(level);
+// Five bands, for the difficulty pips shown on the board.
+export function difficultyBand(rating) {
+  if (rating < 105) return 1;
+  if (rating < 262) return 2;
+  if (rating < 432) return 3;
+  if (rating < 642) return 4;
+  return 5;
+}
+
+export function generatePuzzle(level, options = {}) {
+  const { rand = Math.random, budgetMs = 2500, floor = 0 } = options;
+  const { size, rating: target, irregularity } = levelSpec(level);
   const deadline = Date.now() + budgetMs;
-  const iterations = 400 * size;
   let best = null;
+  let fallback = null;
 
   while (Date.now() < deadline) {
-    const puzzle = climb(size, irregularity, iterations, rand);
+    const puzzle = shapePuzzle(size, target, rand, irregularity);
     if (!puzzle) continue;
     puzzle.level = level;
-    const inBand = puzzle.hardSteps >= minHardSteps && puzzle.hardSteps <= maxHardSteps;
-    if (puzzle.tier === preferredTier && inBand) return puzzle;
-    if (!best || rank(puzzle) > rank(best)) best = puzzle;
+
+    // Never hand the player a puzzle rated below the one they just finished.
+    if (puzzle.rating <= floor) {
+      if (!fallback || puzzle.rating > fallback.rating) fallback = puzzle;
+      continue;
+    }
+    if (!best || Math.abs(puzzle.rating - target) < Math.abs(best.rating - target)) {
+      best = puzzle;
+    }
+    if (Math.abs(best.rating - target) <= target * 0.06) break;
   }
 
-  return best;
-
-  function rank(p) {
-    return (p.tier === preferredTier ? 100 : 0) + Math.min(p.hardSteps, minHardSteps);
-  }
+  return best || fallback;
 }

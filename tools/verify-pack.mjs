@@ -1,10 +1,12 @@
-// Checks every shipped level: one solution, reachable by logic, right size.
+// Checks every shipped level: one solution, reachable by logic, right size,
+// rated where the ladder says, and strictly harder than the level before it.
 // Usage: node tools/verify-pack.mjs
 import { readFileSync } from 'node:fs';
-import { logicSolve, countSolutions, levelSpec } from '../src/puzzle.js';
+import { analyse, countSolutions, levelSpec, difficultyBand } from '../src/puzzle.js';
 
 const pack = JSON.parse(readFileSync(new URL('../data/levels.json', import.meta.url)));
 let failures = 0;
+let previous = 0;
 
 for (const entry of pack.levels) {
   const regions = entry.r.split('').map(Number);
@@ -16,9 +18,15 @@ for (const entry of pack.levels) {
   if (new Set(regions).size !== entry.n) problems.push('wrong number of regions');
   if (countSolutions(entry.n, regions) !== 1) problems.push('solution is not unique');
 
-  const solved = logicSolve(entry.n, regions, 3);
+  const solved = analyse(entry.n, regions);
   if (!solved.solved) problems.push('not solvable by logic alone');
   else {
+    if (solved.rating !== entry.d) problems.push(`rating ${solved.rating}, stored ${entry.d}`);
+    if (difficultyBand(entry.d) !== entry.b) problems.push('stored band disagrees with rating');
+    if (Math.abs(entry.d - spec.rating) > Math.max(3, spec.rating * 0.04)) {
+      problems.push(`rating ${entry.d} is off target ${spec.rating}`);
+    }
+    if (entry.d <= previous) problems.push(`rating ${entry.d} is not above ${previous}`);
     for (let row = 0; row < entry.n; row++) {
       if (solved.state[row * entry.n + entry.s[row]] !== 1) {
         problems.push('stored solution disagrees with the solver');
@@ -27,6 +35,7 @@ for (const entry of pack.levels) {
     }
   }
 
+  previous = entry.d;
   if (problems.length) {
     failures++;
     console.error(`level ${entry.l}: ${problems.join('; ')}`);

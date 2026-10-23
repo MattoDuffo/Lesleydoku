@@ -96,8 +96,35 @@ body {
 
 .level {
   display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.level-line {
+  display: flex;
   align-items: baseline;
   gap: 6px;
+}
+
+/* Difficulty pips: the ramp made visible, so progress is felt. */
+.pips {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-soft);
+  opacity: 0.45;
+}
+
+.pip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  opacity: 1;
 }
 
 .level-label {
@@ -117,6 +144,8 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  align-self: flex-start;
+  padding-top: 4px;
 }
 
 .meta {
