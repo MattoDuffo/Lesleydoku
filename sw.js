@@ -1,5 +1,5 @@
 // Cache-first app shell, so the game works with no signal.
-const CACHE = 'lesleydoku-v1';
+const CACHE = 'lesleydoku-v2';
 const SHELL = [
   './',
   'index.html',
