@@ -1,4 +1,4 @@
-# Lesleydoku
+# LeSudoku
 
 A bunny logic puzzle for the phone. One puzzle at a time: solve it, move on, the
 next one is a little harder.

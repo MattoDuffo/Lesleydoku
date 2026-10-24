@@ -1,6 +1,6 @@
 {
-  "name": "Lesleydoku",
-  "short_name": "Lesleydoku",
+  "name": "LeSudoku",
+  "short_name": "LeSudoku",
   "description": "A bunny logic puzzle: one bunny per row, column and patch.",
   "start_url": ".",
   "scope": ".",
