@@ -1,4 +1,4 @@
-import { generatePuzzle, difficultyBand } from './puzzle.js';
+import { generatePuzzle, difficultyBand, nextDeduction } from './puzzle.js';
 
 const EMPTY = 0;
 const MARKED = 1;
@@ -20,6 +20,7 @@ const el = {
   winSub: document.getElementById('win-sub'),
   nextBtn: document.getElementById('next-btn'),
   undoBtn: document.getElementById('undo-btn'),
+  hintBtn: document.getElementById('hint-btn'),
   clearBtn: document.getElementById('clear-btn'),
   rulesBtn: document.getElementById('rules-btn'),
   rules: document.getElementById('rules'),
@@ -37,7 +38,17 @@ const game = {
   elapsed: 0,
   tickFrom: 0,
   floor: 0,
+  hintsUsed: 0,
 };
+
+// A hint is revealed in three presses: where to look, why, then play it.
+const hint = { stage: 0, deduction: null, mistake: null };
+
+function clearHint() {
+  hint.stage = 0;
+  hint.deduction = null;
+  hint.mistake = null;
+}
 
 let pack = null;
 
@@ -128,10 +139,16 @@ function paint() {
   const { size } = game.puzzle;
   const conflicts = findConflicts();
 
+  const lit = new Set(hint.deduction && hint.stage >= 1 ? hint.deduction.unitCells : []);
+  const ringed = new Set(hintTargets());
+  el.board.classList.toggle('hinting', lit.size > 0);
+
   for (let i = 0; i < game.states.length; i++) {
     const cell = game.cells[i];
     cell.dataset.state = STATE_NAMES[game.states[i]];
     cell.classList.toggle('conflict', conflicts.has(i));
+    cell.classList.toggle('hint-unit', lit.has(i));
+    cell.classList.toggle('hint-target', ringed.has(i));
     cell.setAttribute(
       'aria-label',
       `Row ${((i / size) | 0) + 1}, column ${(i % size) + 1}: ${STATE_NAMES[game.states[i]]}`
@@ -140,9 +157,15 @@ function paint() {
 
   el.undoBtn.disabled = game.history.length === 0;
   el.clearBtn.disabled = game.states.every((s) => s === EMPTY);
+  el.hintBtn.disabled = game.solved;
+  el.hintBtn.textContent = hintLabel();
 
   const placed = game.states.filter((s) => s === BUNNY).length;
-  if (conflicts.size > 0) {
+  const message = hintMessage();
+  el.hint.classList.toggle('live', Boolean(message));
+  if (message) {
+    el.hint.textContent = message;
+  } else if (conflicts.size > 0) {
     el.hint.textContent = 'Those bunnies clash — same line, same patch, or touching.';
   } else if (placed === 0) {
     el.hint.textContent = 'Tap once to rule a cell out, twice to place a bunny.';
@@ -183,6 +206,139 @@ function isSolved() {
   return placed === size && findConflicts().size === 0;
 }
 
+// --- hints ----------------------------------------------------------------
+//
+// A hint never just hands over an answer. First press lights up the row,
+// column or patch that yields the next move; second explains the reasoning;
+// third plays it. If the board has gone wrong, that is said instead, because
+// no deduction from a false premise is worth showing.
+
+const ENGINE_UNKNOWN = 0;
+const ENGINE_BUNNY = 1;
+const ENGINE_BLOCKED = 2;
+
+function engineState() {
+  const out = new Int8Array(game.states.length);
+  for (let i = 0; i < game.states.length; i++) {
+    out[i] = game.states[i] === BUNNY ? ENGINE_BUNNY
+      : game.states[i] === MARKED ? ENGINE_BLOCKED
+      : ENGINE_UNKNOWN;
+  }
+  return out;
+}
+
+function unitName(index, near = true) {
+  const { size } = game.puzzle;
+  if (index < size) return `row ${index + 1}`;
+  if (index < 2 * size) return `column ${index - size + 1}`;
+  return near ? 'this patch' : 'that patch';
+}
+
+// Anything the player has done that the one true solution rules out.
+function findMistake() {
+  const { size, solution } = game.puzzle;
+  if (!solution) return null;
+  const answer = new Set(solution.map((col, row) => row * size + col));
+
+  const wrongBunnies = [];
+  const wrongMarks = [];
+  for (let i = 0; i < game.states.length; i++) {
+    if (game.states[i] === BUNNY && !answer.has(i)) wrongBunnies.push(i);
+    if (game.states[i] === MARKED && answer.has(i)) wrongMarks.push(i);
+  }
+
+  if (wrongBunnies.length) return { kind: 'bunny', cells: wrongBunnies };
+  if (wrongMarks.length) return { kind: 'ruled-out', cells: wrongMarks };
+  return null;
+}
+
+function hintTargets() {
+  if (hint.mistake) return hint.stage >= 2 ? hint.mistake.cells : [];
+  if (!hint.deduction || hint.stage < 2) return [];
+  const { place, clear } = hint.deduction;
+  return place !== undefined ? [place] : clear;
+}
+
+function hintLabel() {
+  if (hint.mistake) return hint.stage >= 2 ? 'Hint' : 'Show me';
+  if (hint.stage === 1) return 'Why?';
+  if (hint.stage >= 2) return 'Play it';
+  return 'Hint';
+}
+
+function hintMessage() {
+  if (hint.mistake) {
+    const many = hint.mistake.cells.length > 1;
+    if (hint.mistake.kind === 'bunny') {
+      return hint.stage >= 2
+        ? `The ringed ${many ? 'bunnies cannot' : 'bunny cannot'} be right — clear ${many ? 'them' : 'it'} and carry on.`
+        : `${many ? 'Some bunnies are' : 'A bunny is'} in the wrong place, so nothing else here will add up.`;
+    }
+    return hint.stage >= 2
+      ? `${many ? 'Those ringed squares hold' : 'That ringed square holds'} a bunny — clear the mark.`
+      : `${many ? 'Some squares you have ruled out hold' : 'A square you have ruled out holds'} a bunny.`;
+  }
+
+  if (!hint.deduction) return '';
+  const { technique, unit, confinedTo, place } = hint.deduction;
+  const here = unitName(unit);
+
+  if (hint.stage === 1) return `Have another look at ${here}.`;
+
+  if (place !== undefined) {
+    return `Only one square is left in ${here} — the bunny goes there.`;
+  }
+  if (technique === 2 && confinedTo !== undefined) {
+    const there = unitName(confinedTo, false);
+    return `Every square still free in ${here} also sits in ${there}, so the rest of ${there} is clear.`;
+  }
+  return `Wherever ${here} puts its bunny, the ringed squares are ruled out.`;
+}
+
+function onHint() {
+  if (game.solved) return;
+
+  if (hint.stage === 0) {
+    hint.mistake = findMistake();
+    hint.deduction = hint.mistake
+      ? null
+      : nextDeduction(game.puzzle.size, game.puzzle.regions, engineState());
+    if (!hint.mistake && !hint.deduction) {
+      el.hint.textContent = 'Nothing left to work out — place the last bunnies.';
+      return;
+    }
+    hint.stage = 1;
+    paint();
+    return;
+  }
+
+  if (hint.mistake) {
+    if (hint.stage === 1) hint.stage = 2;
+    else clearHint();
+    paint();
+    return;
+  }
+
+  if (hint.stage === 1) {
+    hint.stage = 2;
+    paint();
+    return;
+  }
+
+  // Third press: play the move, as an ordinary undoable change.
+  const { place, clear } = hint.deduction;
+  const group = [];
+  if (place !== undefined) applyChange(place, BUNNY, group);
+  else for (const cell of clear) applyChange(cell, MARKED, group);
+  if (group.length) game.history.push(group);
+
+  game.hintsUsed++;
+  clearHint();
+  paint();
+  save();
+  checkWin();
+}
+
 // --- interaction ----------------------------------------------------------
 
 let dragging = null;
@@ -203,6 +359,7 @@ function onPointerDown(event) {
   if (game.solved) return;
   const index = cellFromPoint(event.clientX, event.clientY);
   if (index === null) return;
+  clearHint();
 
   event.preventDefault();
   const group = [];
@@ -235,6 +392,13 @@ function onPointerUp() {
   dragging = null;
 }
 
+function winSummary() {
+  const board = `${game.puzzle.size} × ${game.puzzle.size}`;
+  const time = formatTime(game.elapsed);
+  if (game.hintsUsed === 0) return `${board} in ${time}, no hints.`;
+  return `${board} in ${time}, with ${game.hintsUsed} hint${game.hintsUsed === 1 ? '' : 's'}.`;
+}
+
 function checkWin() {
   if (game.solved || !isSolved()) return;
   game.solved = true;
@@ -242,13 +406,14 @@ function checkWin() {
   el.board.classList.add('solved');
   el.win.hidden = false;
   el.winTitle.textContent = `Level ${game.level} cleared`;
-  el.winSub.textContent = `${game.puzzle.size} × ${game.puzzle.size} in ${formatTime(game.elapsed)}.`;
+  el.winSub.textContent = winSummary();
   el.board.style.opacity = '0.35';
   navigator.vibrate?.(30);
   save();
 }
 
 function undo() {
+  clearHint();
   const group = game.history.pop();
   if (!group) return;
   for (const change of group.slice().reverse()) game.states[change.index] = change.from;
@@ -257,6 +422,7 @@ function undo() {
 }
 
 function clearBoard() {
+  clearHint();
   const group = [];
   for (let i = 0; i < game.states.length; i++) applyChange(i, EMPTY, group);
   if (group.length) game.history.push(group);
@@ -304,6 +470,7 @@ function save() {
         elapsed: game.elapsed,
         solved: game.solved,
         floor: game.floor,
+        hintsUsed: game.hintsUsed,
       })
     );
   } catch (err) {
@@ -364,6 +531,8 @@ async function startLevel(level) {
   game.history = [];
   game.solved = false;
   game.elapsed = 0;
+  game.hintsUsed = 0;
+  clearHint();
 
   el.levelNumber.textContent = String(level);
   el.boardSize.textContent = `${game.puzzle.size} × ${game.puzzle.size}`;
@@ -386,6 +555,8 @@ function restore(saved) {
   game.solved = Boolean(saved.solved);
   game.elapsed = saved.elapsed || 0;
   game.floor = saved.floor || game.puzzle.rating || 0;
+  game.hintsUsed = saved.hintsUsed || 0;
+  clearHint();
 
   el.levelNumber.textContent = String(game.level);
   el.boardSize.textContent = `${game.puzzle.size} × ${game.puzzle.size}`;
@@ -397,7 +568,7 @@ function restore(saved) {
     el.board.style.opacity = '0.35';
     el.win.hidden = false;
     el.winTitle.textContent = `Level ${game.level} cleared`;
-    el.winSub.textContent = `${game.puzzle.size} × ${game.puzzle.size} in ${formatTime(game.elapsed)}.`;
+    el.winSub.textContent = winSummary();
     stopClock();
   } else {
     startClock();
@@ -413,6 +584,7 @@ window.addEventListener('pointercancel', onPointerUp);
 el.board.addEventListener('contextmenu', (e) => e.preventDefault());
 
 el.undoBtn.addEventListener('click', undo);
+el.hintBtn.addEventListener('click', onHint);
 el.clearBtn.addEventListener('click', clearBoard);
 el.nextBtn.addEventListener('click', () => startLevel(game.level + 1));
 el.rulesBtn.addEventListener('click', () => (el.rules.hidden = false));

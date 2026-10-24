@@ -9,6 +9,8 @@ next one is a little harder.
 - No two bunnies may touch — not even corner to corner.
 - Tap a cell once to rule it out, again to place a bunny, again to clear it.
   Drag from an empty cell to rule out a whole run.
+- **Hint** lights up the row, column or patch that gives the next move. Press
+  it again for the reasoning, and once more to play the move.
 - Every puzzle is solvable by logic alone. Guessing is never required.
 
 ## Running it locally
@@ -66,6 +68,22 @@ check against each one, and the more of them are productive at that moment the
 sooner a player spots one. Summing the rounds gives a number that is
 comparable across board sizes, which is what lets the ladder keep climbing
 when the board grows.
+
+## Hints
+
+A hint is the next step the difficulty rating assumed a player would take, so
+it teaches the deduction rather than handing over an answer. `nextDeduction()`
+runs the same solver from the player's own grid and returns the easiest
+technique that still works, preferring the most conspicuous instance of it —
+fewest candidates first, then whichever clears the most squares.
+
+It arrives in three presses: the unit holding the move lights up while the rest
+of the board steps back, then the reasoning appears with the squares in
+question ringed, then the move is played as an ordinary undoable change.
+
+If the grid already contradicts the one true solution, the hint says so and
+rings the offending marks instead, because no deduction from a false premise is
+worth showing. Hints are unlimited; the count is reported on the win card.
 
 ## The level ladder
 

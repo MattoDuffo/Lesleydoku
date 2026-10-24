@@ -55,6 +55,7 @@
 
   <footer class="controls">
     <button class="ghost" id="undo-btn" type="button">Undo</button>
+    <button class="ghost accent" id="hint-btn" type="button">Hint</button>
     <button class="ghost" id="clear-btn" type="button">Clear</button>
     <p class="hint" id="hint">Tap once to rule a cell out, twice to place a bunny.</p>
   </footer>
@@ -68,6 +69,8 @@
       <li>No two bunnies may touch &mdash; not even corner to corner.</li>
       <li>Tap a cell once to rule it out, again to place a bunny, again to clear it. Drag to rule out a run of cells.</li>
       <li>Every puzzle is solvable by logic alone. You never need to guess.</li>
+      <li>Stuck? <strong>Hint</strong> points at the row, column or patch that gives the
+        next move. Press it again for the reasoning, and once more to play it.</li>
     </ul>
     <button class="primary" id="rules-close" type="button">Got it</button>
   </div>

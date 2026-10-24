@@ -162,7 +162,10 @@ function touching(size, cell) {
 
 const SCAN_COST = { 1: 1, 2: 3, 3: 9 };
 
-export function analyse(size, regions, maxTechnique = 3) {
+// A solver over one board, able to start from a player's part-finished grid.
+// Both the difficulty rating and the hints run on this, so a hint is always
+// the next step the rating assumed a player would take.
+function createSolver(size, regions, initialState = null) {
   const units = buildUnits(size, regions);
   const cellUnits = unitsOfCell(size, regions);
   const touches = [];
@@ -170,11 +173,7 @@ export function analyse(size, regions, maxTechnique = 3) {
 
   const state = new Int8Array(size * size).fill(UNKNOWN);
   const hasBunny = new Array(units.length).fill(false);
-  let placed = 0;
-  let rating = 0;
-  let rounds = 0;
-  let hardest = 0;
-  let contradiction = false;
+  const progress = { placed: 0, contradiction: false };
 
   function block(cell) {
     if (state[cell] !== UNKNOWN) return false;
@@ -184,12 +183,12 @@ export function analyse(size, regions, maxTechnique = 3) {
 
   function placeBunny(cell) {
     if (state[cell] === BLOCKED) {
-      contradiction = true;
+      progress.contradiction = true;
       return;
     }
     if (state[cell] === BUNNY) return;
     state[cell] = BUNNY;
-    placed++;
+    progress.placed++;
     for (const u of cellUnits[cell]) {
       hasBunny[u] = true;
       for (const other of units[u]) if (other !== cell) block(other);
@@ -221,24 +220,34 @@ export function analyse(size, regions, maxTechnique = 3) {
     const found = [];
     for (const [u, candidates] of open) {
       if (candidates.length === 0) {
-        contradiction = true;
+        progress.contradiction = true;
         return [];
       }
       if (technique === 1) {
-        if (candidates.length === 1) found.push({ place: candidates[0] });
+        if (candidates.length === 1) {
+          found.push({ technique, unit: u, candidates, place: candidates[0] });
+        }
         continue;
       }
       if (technique === 2) {
         const clear = new Set();
+        let confinedTo = -1;
         for (let slot = 0; slot < 3; slot++) {
           const target = cellUnits[candidates[0]][slot];
           if (target === u) continue;
           if (!candidates.every((c) => cellUnits[c][slot] === target)) continue;
+          let added = false;
           for (const cell of units[target]) {
-            if (state[cell] === UNKNOWN && !candidates.includes(cell)) clear.add(cell);
+            if (state[cell] === UNKNOWN && !candidates.includes(cell)) {
+              clear.add(cell);
+              added = true;
+            }
           }
+          if (added && confinedTo < 0) confinedTo = target;
         }
-        if (clear.size > 0) found.push({ clear: [...clear] });
+        if (clear.size > 0) {
+          found.push({ technique, unit: u, candidates, clear: [...clear], confinedTo });
+        }
         continue;
       }
       const clear = [];
@@ -246,25 +255,51 @@ export function analyse(size, regions, maxTechnique = 3) {
         if (state[cell] !== UNKNOWN || candidates.includes(cell)) continue;
         if (candidates.every((c) => attacks(c, cell))) clear.push(cell);
       }
-      if (clear.length > 0) found.push({ clear });
+      if (clear.length > 0) found.push({ technique, unit: u, candidates, clear });
     }
     return found;
   }
 
-  while (placed < size && !contradiction) {
-    const open = openUnits();
+  function apply(deduction) {
+    if (deduction.place !== undefined) placeBunny(deduction.place);
+    else for (const cell of deduction.clear) block(cell);
+  }
+
+  // Take on what the player has already worked out. Their marks must agree
+  // with the real solution, which the caller checks first.
+  if (initialState) {
+    for (let i = 0; i < initialState.length; i++) {
+      if (initialState[i] === BUNNY) placeBunny(i);
+    }
+    for (let i = 0; i < initialState.length; i++) {
+      if (initialState[i] === BLOCKED) block(i);
+    }
+  }
+
+  return { state, units, progress, openUnits, deductionsAt, apply };
+}
+
+export function analyse(size, regions, maxTechnique = 3) {
+  const solver = createSolver(size, regions);
+  const { progress } = solver;
+  let rating = 0;
+  let rounds = 0;
+  let hardest = 0;
+
+  while (progress.placed < size && !progress.contradiction) {
+    const open = solver.openUnits();
     let technique = 0;
     let deductions = [];
 
     for (let t = 1; t <= maxTechnique; t++) {
-      deductions = deductionsAt(t, open);
-      if (contradiction) break;
+      deductions = solver.deductionsAt(t, open);
+      if (progress.contradiction) break;
       if (deductions.length > 0) {
         technique = t;
         break;
       }
     }
-    if (contradiction || technique === 0) break;
+    if (progress.contradiction || technique === 0) break;
 
     // The hunt: 3N units to check, dearer per unit for a harder technique,
     // divided by however many of them are currently productive.
@@ -272,24 +307,59 @@ export function analyse(size, regions, maxTechnique = 3) {
     rounds++;
     hardest = Math.max(hardest, technique);
 
-    for (const deduction of deductions) {
-      if (deduction.place !== undefined) placeBunny(deduction.place);
-      else for (const cell of deduction.clear) block(cell);
-    }
+    for (const deduction of deductions) solver.apply(deduction);
   }
 
   let resolved = 0;
-  for (const s of state) if (s !== UNKNOWN) resolved++;
+  for (const s of solver.state) if (s !== UNKNOWN) resolved++;
 
   return {
-    solved: !contradiction && placed === size,
+    solved: !progress.contradiction && progress.placed === size,
     resolved,
     rating: Math.round(rating),
     rounds,
     hardest,
-    state,
+    state: solver.state,
   };
 }
+
+// The next step a player could reasonably find from where they are: the
+// easiest technique that works, and within it the most conspicuous instance.
+// `state` is the player's grid in engine encoding; it must not contradict the
+// solution. Returns null only if nothing at all is left to deduce.
+export function nextDeduction(size, regions, state) {
+  const solver = createSolver(size, regions, state);
+  if (solver.progress.contradiction) return null;
+
+  const open = solver.openUnits();
+  for (let technique = 1; technique <= 3; technique++) {
+    const deductions = solver.deductionsAt(technique, open);
+    if (solver.progress.contradiction) return null;
+    if (deductions.length === 0) continue;
+
+    // Fewest candidates reads as most obvious; failing that, the deduction
+    // that clears the most squares is the one worth pointing at.
+    deductions.sort(
+      (a, b) =>
+        a.candidates.length - b.candidates.length ||
+        (b.clear ? b.clear.length : 0) - (a.clear ? a.clear.length : 0)
+    );
+    const pick = deductions[0];
+    return {
+      technique,
+      unit: pick.unit,
+      unitCells: solver.units[pick.unit],
+      candidates: pick.candidates,
+      place: pick.place,
+      clear: pick.clear,
+      confinedTo: pick.confinedTo >= 0 ? pick.confinedTo : undefined,
+      confinedCells: pick.confinedTo >= 0 ? solver.units[pick.confinedTo] : undefined,
+    };
+  }
+
+  return null;
+}
+
 
 // Exhaustive count (capped at 2) used to confirm uniqueness.
 export function countSolutions(size, regions, limit = 2) {

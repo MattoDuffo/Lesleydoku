@@ -277,8 +277,8 @@ body {
 /* --- controls --- */
 .controls {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
   align-items: center;
 }
 
@@ -288,7 +288,7 @@ body {
   text-align: center;
   font-size: 12.5px;
   color: var(--ink-soft);
-  min-height: 1.4em;
+  min-height: 2.8em;
 }
 
 button { font: inherit; cursor: pointer; }
@@ -303,6 +303,35 @@ button { font: inherit; cursor: pointer; }
 }
 
 .ghost:disabled { opacity: 0.4; }
+
+.ghost.accent { color: var(--accent); }
+
+/* --- hints --- */
+
+/* Stage one: the rest of the board steps back so the unit holding the next
+   move is unmistakable, pulsing rather than merely tinted. */
+.board.hinting .cell:not(.hint-unit) {
+  filter: saturate(0.35) brightness(1.04);
+  opacity: 0.7;
+}
+
+.cell.hint-unit { animation: hint-pulse 1.6s ease-in-out infinite; }
+
+@keyframes hint-pulse {
+  50% { filter: brightness(1.12) saturate(1.3); }
+}
+
+/* Stage two: the squares the deduction is actually about. */
+.cell.hint-target::after {
+  content: '';
+  position: absolute;
+  inset: 14%;
+  border: 2px dashed var(--accent);
+  border-radius: 5px;
+  animation: rise 0.2s ease;
+}
+
+.hint.live { color: var(--accent); }
 
 .primary {
   width: 100%;
